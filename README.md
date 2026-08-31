@@ -1,45 +1,54 @@
-# Surat Ditajenad — Backend Laravel
+# Surat Ditajenad (CARAKA-BINUM)
 
-Konversi penuh backend PHP murni (`../surat_ditajenad/backend`) ke Laravel 13,
-untuk aplikasi Flutter **Surat Menyurat Ditajenad TNI AD (CARAKA-BINUM)**.
-Backend lama tetap ada sebagai referensi read-only, tidak diubah sama sekali.
+Backend Laravel untuk **Surat Menyurat Ditajenad TNI AD (CARAKA-BINUM)** —
+sistem administrasi surat masuk & keluar untuk Direktorat Ajudan Jenderal
+TNI Angkatan Darat, Subditbinum. Menangani alur persetujuan berjenjang,
+disposisi, dan pengarsipan lampiran, dengan web app (Livewire) dan REST API
+(untuk aplikasi Flutter pendamping) yang berjalan di atas basis data yang sama.
 
-## Kompatibilitas API
+## Fitur utama
 
-Setiap endpoint sengaja dibuat dengan **path yang persis sama** dengan file
-PHP lama (termasuk akhiran `.php`), sehingga aplikasi Flutter yang sudah ada
-bisa langsung dipakai dengan proyek ini hanya dengan mengganti base URL
-backend — tidak perlu mengubah kode Dart sama sekali. Bentuk request/response
-JSON, urutan validasi, kode status HTTP, dan pesan error juga direplikasi
-1:1 dari sumber PHP-nya.
-
-Lihat `routes/api.php` (dan file `routes/api_*.php` per modul) untuk katalog
-lengkap endpoint, dan `backend/DOCUMENTATION.md` di proyek lama untuk konteks
-bisnis penuh (state machine surat, model peran, dsb — meski beberapa
-detail di sana sudah tidak akurat dibanding source code aktualnya, terutama
-soal struktur `bag_keluar`/`bag_masuk`).
+- **Surat Masuk** — input oleh Turmin, persetujuan Kasubdit, lalu diteruskan
+  ke Bag tujuan. Bag yang punya akun Kabag terdaftar akan berhenti dulu di
+  Kabag (isi disposisi + pilih anggota mana yang dituju); Bag tanpa Kabag
+  otomatis diteruskan ke seluruh anggotanya. Kasubdit juga bisa menambahkan
+  **Tembusan Manual** — akun bebas di luar struktur Bag yang ikut jadi
+  tujuan disposisi dan bisa mengisi responsnya sendiri.
+- **Surat Keluar** — rantai persetujuan otomatis mengikuti struktur
+  Bag/Kasi/Kaur, atau rantai manual (bebas pilih siapa saja yang memproses,
+  bebas urutan).
+- **Lampiran & OnlyOffice** — pratinjau/edit/anotasi dokumen (PDF, DOCX,
+  PPTX, XLSX) langsung di browser lewat OnlyOffice Document Server, dengan
+  opsi enkripsi-at-rest untuk file yang diunggah.
+- **Notifikasi** — Web Push ke notification bar HP/desktop (tetap masuk
+  meski browser tertutup) dan pengumuman broadcast dari admin.
+- **Kontrol akses** — autentikasi berbasis token untuk API (dipakai aplikasi
+  Flutter) dan sesi web biasa untuk Livewire, dengan peran admin/pimpinan/
+  Kasubdit/Kabag/Turmin/user serta pembatasan satu sesi aktif per akun.
+- **Log aktivitas** — jejak audit untuk setiap aksi penting pada surat.
 
 ## Struktur
 
-- `app/Models/` — Eloquent 1:1 dari `backend/schema.sql`.
-- `app/Services/` — migrasi helper `backend/config/*.php` (`BagService`,
-  `SuratFileService`, `TokenAuthService`, `ActivityLogger`,
-  `BaseUrlResolver`, `OnlyOfficeJwtService`).
-- `app/Http/Controllers/Api/` — satu controller per modul lama.
+- `app/Models/` — Eloquent untuk seluruh entitas (Surat, SuratApproval,
+  SuratDisposisi, SuratFile, BagMasuk/BagKeluar, User, dll).
+- `app/Services/` — logika inti (`BagService` untuk struktur organisasi &
+  routing disposisi, `SuratFileService`, `TokenAuthService`,
+  `FileEncryptionService`, `ActivityLogger`, `OnlyOfficeJwtService`).
+- `app/Http/Controllers/Api/` — REST API untuk aplikasi Flutter, satu
+  controller per modul.
+- `app/Livewire/` — web app (form surat, review/approval, manajemen Bag,
+  hak akses, dsb).
 - `app/Http/Middleware/` — `CorsMiddleware`, `TokenAuthMiddleware`
-  (alias `auth.token`), `AdminOnlyMiddleware` (alias `auth.admin`) — autentikasi
-  bearer-token stateless (bukan session Laravel), meniru `require_auth()`/
-  `require_admin()` lama.
-- `app/Exceptions/ApiException.php` — error terkontrol, dirender seragam
-  sebagai `{"error": "..."}` lewat `bootstrap/app.php`.
-- `config/suratapp.php` — semua konstanta yang dulu ada di `backend/config/*.php`
-  (TTL token, kredensial OnlyOffice, whitelist MIME, dsb), sekarang lewat `.env`.
+  (`auth.token`), `AdminOnlyMiddleware` (`auth.admin`) untuk autentikasi
+  bearer-token stateless di sisi API.
+- `config/suratapp.php` — seluruh konfigurasi khusus aplikasi (TTL token,
+  kredensial OnlyOffice, instruksi disposisi valid, dsb), semuanya lewat
+  `.env`.
 
 ## Menjalankan secara lokal
 
-Butuh PHP 8.2+, ekstensi `mysqli`/`pdo_mysql`/`gd`/`fileinfo`, MySQL/MariaDB,
-dan Composer (`~/.local/bin/composer` di sandbox dev ini kalau belum ada
-secara global).
+Butuh PHP 8.2+, ekstensi `mysqli`/`pdo_mysql`/`gd`/`fileinfo`,
+MySQL/MariaDB, dan Composer.
 
 ```bash
 composer install
@@ -47,28 +56,13 @@ cp .env.example .env
 php artisan key:generate
 ```
 
-Isi `.env`: `DB_*` (default sudah cocok untuk MySQL lewat LAMPP —
-`DB_SOCKET=/opt/lampp/var/mysql/mysql.sock`, database `surat_ditajenad_laravel`),
-`ONLYOFFICE_JWT_SECRET` (samakan dengan `backend/config/onlyoffice.php` kalau
-mau tetap kompatibel dengan Document Server yang sama).
+Isi `.env` sesuai kebutuhan (koneksi database, `ONLYOFFICE_JWT_SECRET` kalau
+mau memakai integrasi OnlyOffice, VAPID key untuk Web Push lewat
+`php artisan webpush:vapid`).
 
 ```bash
 php artisan migrate --seed   # buat skema + 1 akun admin awal (admin/admin123)
 php artisan serve --port=8800
 ```
 
-Ganti password `admin` setelah login pertama lewat `auth_change_password.php`.
-
-## Yang BELUM ikut dipindahkan dari proyek lama
-
-- **Data & lampiran lama** — ini proyek/skema baru (`surat_ditajenad_laravel`),
-  bukan migrasi data dari database `surat_ditajenad` yang sudah berjalan.
-  Kalau perlu memindahkan data produksi, tulis skrip migrasi data terpisah
-  (skema tabel sudah identik, jadi ini murni `INSERT ... SELECT` antar
-  database/koneksi, plus salin `backend/storage/uploads/` ke
-  `storage/app/uploads/` di proyek ini).
-- **Deployment** (`backend/deploy/` — provisioning Nginx/PHP-FPM/MariaDB/
-  Docker OnlyOffice) belum direplikasi untuk proyek Laravel ini.
-- Frontend Flutter (`lib/`) tidak disentuh — tetap di proyek lama, cukup ganti
-  base URL API-nya (`lib/services/api_config.dart`) ke backend Laravel ini
-  kalau ingin dipakai bersama.
+Ganti password akun `admin` setelah login pertama.
