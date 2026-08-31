@@ -1,0 +1,31 @@
+@import 'tailwindcss';
+
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../storage/framework/views/*.php';
+
+/* Palet hijau-emas Ajudan Jenderal TNI AD -- migrasi dari
+   lib/theme/app_theme.dart (AppColors) di proyek Flutter lama, supaya
+   tampilan web tetap satu identitas visual dengan app mobile/desktop. */
+@theme {
+    --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
+
+    --color-primary-green: #0b3d24;
+    --color-secondary-green: #145c34;
+    --color-gold: #c9a227;
+    --color-gold-light: #e9cd6b;
+    --color-app-background: #f4f6f5;
+    --color-app-surface: #ffffff;
+    --color-text-dark: #1b1f1d;
+    --color-text-muted: #6b7570;
+    --color-app-error: #b3261e;
+}
+
+body {
+    background-color: var(--color-app-background);
+    color: var(--color-text-dark);
+}
+
+[x-cloak] {
+    display: none !important;
+}
