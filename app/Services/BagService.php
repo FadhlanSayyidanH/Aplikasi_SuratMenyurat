@@ -321,42 +321,164 @@ class BagService
     }
 
     /**
-     * Kabag $kabagNama meneruskan surat $suratId ke $userIdsTerpilih --
-     * SUBSET anggota bag_disposisi_anggota bag milik Kabag ini sendiri
-     * (TIDAK bisa ke Bag lain). Membuat baris surat_disposisi baru untuk
-     * tiap yang dipilih dan belum ada (idempotent -- aman dipanggil ulang
-     * kalau Kabag mengubah pilihan lalu Simpan lagi). Anggota yang bukan
-     * bagian bag ini diam-diam diabaikan (bukan celah keamanan -- cuma
-     * mencegah mismatch checkbox vs data server, bukan otorisasi ke Bag
-     * lain karena daftarnya sendiri sudah dibatasi ke bag milik Kabag).
+     * Kabag $kabagNama menyetel daftar anggota bag-nya sendiri yang jadi
+     * tujuan disposisi surat $suratId -- REKONSILIASI penuh terhadap SUBSET
+     * anggota bag_disposisi_anggota bag milik Kabag ini (TIDAK bisa ke Bag
+     * lain, TIDAK menyentuh baris Kabag sendiri / Kasubditbinum / approval /
+     * anggota Bag lain / tembusan-manual luar struktur):
+     *
+     *  - anggota dicentang & belum punya baris  -> baris surat_disposisi baru
+     *  - anggota bag ini yang TIDAK dicentang & sudah punya baris tapi BELUM
+     *    direspon (catatan kosong & diproses_oleh null) -> barisnya DIHAPUS
+     *    (inilah perbaikan bug "Kabag uncheck kaur tapi tidak bisa overwrite"
+     *    -- dulu fungsi ini insert-only, uncheck tidak berefek apa pun)
+     *  - anggota bag ini yang tidak dicentang tapi SUDAH mengisi disposisinya
+     *    -> DIBIARKAN (jangan hapus respons/jejak audit), namanya dikembalikan
+     *    di 'dipertahankan' supaya caller bisa memberi tahu Kabag
+     *
+     * Idempotent & aman dipanggil setiap Kabag menekan Simpan, termasuk saat
+     * $userIdsTerpilih kosong (berarti Kabag membatalkan semua anggota).
+     * Anggota di $userIdsTerpilih yang bukan bagian bag ini diabaikan diam-diam.
      *
      * @param  int[]  $userIdsTerpilih
-     * @return string[] nama yang BENAR-BENAR baru ditambahkan (caller pakai ini untuk update kolom surat.disposisi)
+     * @return array{ditambah: string[], dihapus: string[], dipertahankan: string[]}
      */
     public function teruskanDisposisiKabag(int $suratId, string $kabagNama, array $userIdsTerpilih): array
     {
+        $kosong = ['ditambah' => [], 'dihapus' => [], 'dipertahankan' => []];
+
         $bag = $this->bagUntukKabagNama($kabagNama);
-        if (!$bag || !$userIdsTerpilih) {
-            return [];
+        if (!$bag) {
+            return $kosong;
         }
 
-        $anggotaValid = collect($bag['anggota_masuk'])->keyBy('user_id');
-        $namaBaru = [];
+        $idTerpilih = array_map('intval', $userIdsTerpilih);
+        $ditambah = $dihapus = $dipertahankan = [];
 
-        foreach ($userIdsTerpilih as $userId) {
-            $anggota = $anggotaValid->get((int) $userId);
-            if (!$anggota) {
+        foreach ($bag['anggota_masuk'] as $anggota) {
+            $nama = $anggota['nama'];
+            $dipilih = in_array((int) $anggota['user_id'], $idTerpilih, true);
+            $row = DB::table('surat_disposisi')
+                ->where('surat_id', $suratId)->where('role', $nama)
+                ->first(['catatan', 'diproses_oleh']);
+
+            if ($dipilih) {
+                if (!$row) {
+                    DB::table('surat_disposisi')->insert(['surat_id' => $suratId, 'role' => $nama, 'ditambah_oleh' => $kabagNama]);
+                    $ditambah[] = $nama;
+                }
+
                 continue;
             }
-            $sudahAda = DB::table('surat_disposisi')->where('surat_id', $suratId)->where('role', $anggota['nama'])->exists();
-            if ($sudahAda) {
+
+            if (!$row) {
                 continue;
             }
-            DB::table('surat_disposisi')->insert(['surat_id' => $suratId, 'role' => $anggota['nama']]);
-            $namaBaru[] = $anggota['nama'];
+
+            $sudahRespon = ($row->catatan !== null && trim($row->catatan) !== '') || $row->diproses_oleh !== null;
+            if ($sudahRespon) {
+                $dipertahankan[] = $nama;
+
+                continue;
+            }
+
+            DB::table('surat_disposisi')->where('surat_id', $suratId)->where('role', $nama)->delete();
+            $dihapus[] = $nama;
         }
 
-        return $namaBaru;
+        return ['ditambah' => $ditambah, 'dihapus' => $dihapus, 'dipertahankan' => $dipertahankan];
+    }
+
+    /**
+     * id semua Bag masuk tempat akun bernama $nama terdaftar sebagai
+     * Penerima Disposisi (bag_disposisi_anggota). Dipakai untuk membatasi
+     * "teruskan ke rekan sebag" hanya ke sesama Penerima Disposisi Bag yang
+     * sama -- lihat teruskanDisposisiAntarAnggota() & App\Livewire\SuratReview.
+     *
+     * @return int[]
+     */
+    public function bagDisposisiIdsUntukNama(string $nama): array
+    {
+        return DB::table('bag_disposisi_anggota as bda')
+            ->join('users as u', 'u.id', '=', 'bda.user_id')
+            ->where('u.nama', $nama)
+            ->pluck('bda.bag_id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+    }
+
+    /**
+     * Sesama Penerima Disposisi meneruskan surat $suratId ke rekan SATU Bag
+     * yang sama ($dariNama harus terdaftar di bag_disposisi_anggota). Beda
+     * dari teruskanDisposisiKabag():
+     *  - target valid = sesama bag_disposisi_anggota Bag(-Bag) milik $dariNama,
+     *    minus dirinya sendiri. Kabag TIDAK termasuk.
+     *  - anggota boleh MEMBATALKAN (uncheck) hanya baris yang DIA sendiri
+     *    tambahkan (`ditambah_oleh === $dariNama`) dan yang penerimanya BELUM
+     *    mengisi disposisi. Baris milik Kabag / gerbang / yang sudah direspon
+     *    tidak tersentuh.
+     *
+     * @param  int[]  $userIdsTerpilih
+     * @return array{ditambah: string[], dihapus: string[], ditolak: int[]}
+     */
+    public function teruskanDisposisiAntarAnggota(int $suratId, string $dariNama, array $userIdsTerpilih): array
+    {
+        $kosong = ['ditambah' => [], 'dihapus' => [], 'ditolak' => []];
+
+        $bagIds = $this->bagDisposisiIdsUntukNama($dariNama);
+        if (!$bagIds) {
+            return $kosong;
+        }
+
+        $dariUserId = (int) DB::table('users')->where('nama', $dariNama)->value('id');
+
+        // Sesama Penerima Disposisi Bag-Bag itu (kecuali $dariNama sendiri).
+        $rekan = DB::table('bag_disposisi_anggota as bda')
+            ->join('users as u', 'u.id', '=', 'bda.user_id')
+            ->whereIn('bda.bag_id', $bagIds)
+            ->where('u.id', '!=', $dariUserId)
+            ->distinct()
+            ->pluck('u.nama', 'u.id'); // [user_id => nama]
+
+        $idTerpilih = array_map('intval', $userIdsTerpilih);
+        $ditambah = $dihapus = $ditolak = [];
+
+        // Tambah: dicentang, rekan sebag valid, belum punya baris.
+        foreach ($idTerpilih as $uid) {
+            if (!$rekan->has($uid)) {
+                $ditolak[] = $uid;
+
+                continue;
+            }
+            $nama = $rekan->get($uid);
+            $ada = DB::table('surat_disposisi')->where('surat_id', $suratId)->where('role', $nama)->exists();
+            if (!$ada) {
+                DB::table('surat_disposisi')->insert(['surat_id' => $suratId, 'role' => $nama, 'ditambah_oleh' => $dariNama]);
+                $ditambah[] = $nama;
+            }
+        }
+
+        // Batalkan: rekan sebag valid yang TIDAK dicentang, barisnya dibuat
+        // $dariNama sendiri, dan penerimanya belum merespon.
+        foreach ($rekan as $uid => $nama) {
+            if (in_array((int) $uid, $idTerpilih, true)) {
+                continue;
+            }
+            $row = DB::table('surat_disposisi')
+                ->where('surat_id', $suratId)->where('role', $nama)
+                ->first(['catatan', 'diproses_oleh', 'ditambah_oleh']);
+            if (!$row || $row->ditambah_oleh !== $dariNama) {
+                continue;
+            }
+            $sudahRespon = ($row->catatan !== null && trim($row->catatan) !== '') || $row->diproses_oleh !== null;
+            if ($sudahRespon) {
+                continue;
+            }
+            DB::table('surat_disposisi')->where('surat_id', $suratId)->where('role', $nama)->delete();
+            $dihapus[] = $nama;
+        }
+
+        return ['ditambah' => $ditambah, 'dihapus' => $dihapus, 'ditolak' => $ditolak];
     }
 
     /** true kalau $nama valid sebagai role di surat_disposisi. */

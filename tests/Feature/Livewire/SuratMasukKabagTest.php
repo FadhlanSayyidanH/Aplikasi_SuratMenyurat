@@ -261,4 +261,157 @@ class SuratMasukKabagTest extends TestCase
 
         $this->assertSame(1, SuratDisposisi::where('surat_id', $surat->id)->where('role', $anggota1->nama)->count(), 'Simpan berulang dengan checkbox yang sama tidak boleh menggandakan baris disposisi');
     }
+
+    /**
+     * Regresi 2026-09-02 (dilaporkan user): Kasubdit meneruskan surat ke
+     * seorang Kaur yang kebetulan anggota jajaran sebuah Kabag (lewat
+     * Tembusan Manual). Saat Kabag membuka surat, checkbox Kaur itu
+     * pra-tercentang; Kabag meng-UNCHECK-nya dan Simpan -- tapi baris
+     * disposisi Kaur TIDAK terhapus (teruskanDisposisiKabag() dulu
+     * insert-only + ada guard `if ($userIdsTerpilih)`). Sekarang uncheck
+     * benar-benar menghapus baris (selama Kaur belum mengisi disposisinya).
+     */
+    public function test_kabag_uncheck_anggota_yang_ditambahkan_kasubdit_menghapus_barisnya(): void
+    {
+        [$surat, $bag, , $kasubdit, $kabag, $anggota] = $this->setupSuratMenungguKasubdit(denganKabag: true);
+        [$anggota1] = $anggota;
+
+        // Kasubdit teruskan ke Bag (baris Kabag) + tambahan manual ke anggota1.
+        Livewire::actingAs($kasubdit)->test(\App\Livewire\SuratReview::class, ['surat' => $surat])
+            ->set('instruksiDisposisi', ['tindak_lanjuti'])
+            ->set('bagTujuanTerpilih', [$bag->id])
+            ->set('tembusanManualTerpilih', [['user_id' => $anggota1->id, 'nama' => $anggota1->nama]])
+            ->call('simpan');
+
+        $this->assertEqualsCanonicalizing(
+            [$kabag->nama, $anggota1->nama],
+            SuratDisposisi::where('surat_id', $surat->id)->pluck('role')->all(),
+        );
+
+        // Kabag buka surat: anggota1 harus pra-tercentang.
+        $buka = Livewire::actingAs($kabag)->test(\App\Livewire\SuratReview::class, ['surat' => $surat->fresh()]);
+        $this->assertContains($anggota1->id, $buka->get('kabagAnggotaTerpilih')[$kabag->nama] ?? [], 'anggota1 harus pra-tercentang karena sudah punya baris disposisi');
+
+        // Kabag UNCHECK anggota1 lalu Simpan.
+        $buka->set('disposisiCatatan.'.$kabag->nama, 'Tidak jadi diteruskan ke Kaur itu.')
+            ->set('kabagAnggotaTerpilih.'.$kabag->nama, [])
+            ->call('simpanDisposisi', $kabag->nama);
+
+        $roles = SuratDisposisi::where('surat_id', $surat->id)->pluck('role')->all();
+        $this->assertSame([$kabag->nama], $roles, 'Baris disposisi anggota1 harus terhapus setelah di-uncheck Kabag');
+        $this->assertStringNotContainsString($anggota1->nama, (string) Surat::find($surat->id)->disposisi, 'Kolom disposisi (string) juga tidak boleh lagi memuat anggota1');
+    }
+
+    public function test_kabag_uncheck_semua_menghapus_semua_baris_anggota_bag_ini(): void
+    {
+        [$surat, $bag, , $kasubdit, $kabag, $anggota] = $this->setupSuratMenungguKasubdit(denganKabag: true);
+        [$anggota1, $anggota2] = $anggota;
+
+        Livewire::actingAs($kasubdit)->test(\App\Livewire\SuratReview::class, ['surat' => $surat])
+            ->set('instruksiDisposisi', ['tindak_lanjuti'])
+            ->set('bagTujuanTerpilih', [$bag->id])
+            ->call('simpan');
+
+        // Kabag teruskan ke keduanya dulu.
+        Livewire::actingAs($kabag)->test(\App\Livewire\SuratReview::class, ['surat' => $surat->fresh()])
+            ->set('disposisiCatatan.'.$kabag->nama, 'Teruskan ke semua.')
+            ->set('kabagAnggotaTerpilih.'.$kabag->nama, [$anggota1->id, $anggota2->id])
+            ->call('simpanDisposisi', $kabag->nama);
+        $this->assertSame(3, SuratDisposisi::where('surat_id', $surat->id)->count());
+
+        // Lalu buka lagi & uncheck semua.
+        Livewire::actingAs($kabag)->test(\App\Livewire\SuratReview::class, ['surat' => $surat->fresh()])
+            ->set('disposisiCatatan.'.$kabag->nama, 'Batalkan semua, cukup saya sendiri.')
+            ->set('kabagAnggotaTerpilih.'.$kabag->nama, [])
+            ->call('simpanDisposisi', $kabag->nama);
+
+        $this->assertSame([$kabag->nama], SuratDisposisi::where('surat_id', $surat->id)->pluck('role')->all());
+    }
+
+    public function test_kabag_tidak_bisa_menghapus_anggota_yang_sudah_mengisi_disposisi(): void
+    {
+        [$surat, $bag, , $kasubdit, $kabag, $anggota] = $this->setupSuratMenungguKasubdit(denganKabag: true);
+        [$anggota1] = $anggota;
+
+        Livewire::actingAs($kasubdit)->test(\App\Livewire\SuratReview::class, ['surat' => $surat])
+            ->set('instruksiDisposisi', ['tindak_lanjuti'])
+            ->set('bagTujuanTerpilih', [$bag->id])
+            ->call('simpan');
+
+        Livewire::actingAs($kabag)->test(\App\Livewire\SuratReview::class, ['surat' => $surat->fresh()])
+            ->set('disposisiCatatan.'.$kabag->nama, 'Teruskan.')
+            ->set('kabagAnggotaTerpilih.'.$kabag->nama, [$anggota1->id])
+            ->call('simpanDisposisi', $kabag->nama);
+
+        // anggota1 mengisi disposisinya sendiri.
+        Livewire::actingAs($anggota1)->test(\App\Livewire\SuratReview::class, ['surat' => $surat->fresh()])
+            ->set('disposisiCatatan.'.$anggota1->nama, 'Sudah saya tindak lanjuti.')
+            ->call('simpanDisposisi', $anggota1->nama);
+
+        // Kabag mencoba meng-uncheck anggota1 yang sudah merespon.
+        Livewire::actingAs($kabag)->test(\App\Livewire\SuratReview::class, ['surat' => $surat->fresh()])
+            ->set('disposisiCatatan.'.$kabag->nama, 'Coba batalkan anggota1.')
+            ->set('kabagAnggotaTerpilih.'.$kabag->nama, [])
+            ->call('simpanDisposisi', $kabag->nama);
+
+        $row = SuratDisposisi::where('surat_id', $surat->id)->where('role', $anggota1->nama)->first();
+        $this->assertNotNull($row, 'Anggota yang sudah mengisi disposisi tidak boleh terhapus oleh uncheck Kabag');
+        $this->assertSame('Sudah saya tindak lanjuti.', $row->catatan, 'Responsnya harus tetap utuh');
+    }
+
+    public function test_kabag_uncheck_satu_pertahankan_yang_lain(): void
+    {
+        [$surat, $bag, , $kasubdit, $kabag, $anggota] = $this->setupSuratMenungguKasubdit(denganKabag: true);
+        [$anggota1, $anggota2] = $anggota;
+
+        Livewire::actingAs($kasubdit)->test(\App\Livewire\SuratReview::class, ['surat' => $surat])
+            ->set('instruksiDisposisi', ['tindak_lanjuti'])
+            ->set('bagTujuanTerpilih', [$bag->id])
+            ->call('simpan');
+
+        Livewire::actingAs($kabag)->test(\App\Livewire\SuratReview::class, ['surat' => $surat->fresh()])
+            ->set('disposisiCatatan.'.$kabag->nama, 'Teruskan ke keduanya.')
+            ->set('kabagAnggotaTerpilih.'.$kabag->nama, [$anggota1->id, $anggota2->id])
+            ->call('simpanDisposisi', $kabag->nama);
+
+        Livewire::actingAs($kabag)->test(\App\Livewire\SuratReview::class, ['surat' => $surat->fresh()])
+            ->set('disposisiCatatan.'.$kabag->nama, 'Cukup Anggota Dua saja.')
+            ->set('kabagAnggotaTerpilih.'.$kabag->nama, [$anggota2->id])
+            ->call('simpanDisposisi', $kabag->nama);
+
+        $roles = SuratDisposisi::where('surat_id', $surat->id)->pluck('role')->sort()->values()->all();
+        $this->assertSame([$anggota2->nama, $kabag->nama], $roles);
+    }
+
+    public function test_rekonsiliasi_kabag_tidak_menyentuh_disposisi_bag_lain(): void
+    {
+        [$surat, $bag, , $kasubdit, $kabag, $anggota] = $this->setupSuratMenungguKasubdit(denganKabag: true);
+        [$anggota1] = $anggota;
+
+        // Bag lain + anggotanya, dengan baris disposisi di surat yang sama
+        // (mis. Kasubdit juga meneruskan ke sana / tembusan manual).
+        $orangBagLain = $this->buatUser('Orang Bag Lain', 'user');
+        $bagLain = BagMasuk::create([
+            'nama' => 'Bag Lain', 'turmin_user_id' => null, 'kasubdit_user_id' => null,
+            'kabag_user_id' => $this->buatUser('Kabag Lain', 'user')->id,
+        ]);
+        BagDisposisiAnggota::create(['bag_id' => $bagLain->id, 'user_id' => $orangBagLain->id, 'urutan' => 1]);
+        SuratDisposisi::create(['surat_id' => $surat->id, 'role' => $orangBagLain->nama]);
+
+        Livewire::actingAs($kasubdit)->test(\App\Livewire\SuratReview::class, ['surat' => $surat])
+            ->set('instruksiDisposisi', ['tindak_lanjuti'])
+            ->set('bagTujuanTerpilih', [$bag->id])
+            ->call('simpan');
+
+        // Kabag bag pertama uncheck semua -- baris milik orang Bag lain harus utuh.
+        Livewire::actingAs($kabag)->test(\App\Livewire\SuratReview::class, ['surat' => $surat->fresh()])
+            ->set('disposisiCatatan.'.$kabag->nama, 'Batalkan anggota saya.')
+            ->set('kabagAnggotaTerpilih.'.$kabag->nama, [])
+            ->call('simpanDisposisi', $kabag->nama);
+
+        $this->assertNotNull(
+            SuratDisposisi::where('surat_id', $surat->id)->where('role', $orangBagLain->nama)->first(),
+            'Rekonsiliasi Kabag hanya boleh menyentuh anggota bag-nya sendiri',
+        );
+    }
 }

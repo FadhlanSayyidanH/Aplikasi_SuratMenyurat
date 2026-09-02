@@ -619,24 +619,74 @@ class SuratController extends Controller
         );
 
         // Sama seperti App\Livewire\SuratReview::simpanDisposisi() -- kalau
-        // $role ini akun Kabag, sekalian proses "teruskan ke anggota"
-        // (opsional, dikirim client sebagai array anggota_terpilih berisi
-        // user_id). Lihat BagService::teruskanDisposisiKabag().
+        // $role ini akun Kabag, rekonsiliasi "teruskan ke anggota" (client
+        // kirim array anggota_terpilih berisi user_id): yang dicentang
+        // ditambahkan, yang tidak dicentang & belum merespon DIHAPUS. Dipanggil
+        // tanpa syarat ada isinya (anggota_terpilih kosong = batalkan semua).
+        // Lihat BagService::teruskanDisposisiKabag().
         $anggotaTerpilihInput = $request->input('anggota_terpilih', []);
         $userIdsTerpilih = is_array($anggotaTerpilihInput)
             ? array_values(array_filter(array_map('intval', $anggotaTerpilihInput)))
             : [];
-        if ($userIdsTerpilih) {
-            $namaBaru = $this->bagService->teruskanDisposisiKabag($id, $role, $userIdsTerpilih);
-            if ($namaBaru) {
-                $suratRow = DB::table('surat')->where('id', $id)->first();
-                $gabunganLama = $suratRow && $suratRow->disposisi ? explode(',', $suratRow->disposisi) : [];
-                $gabunganBaru = array_values(array_unique([...$gabunganLama, ...$namaBaru]));
-                DB::table('surat')->where('id', $id)->update(['disposisi' => implode(',', $gabunganBaru)]);
+        if ($this->bagService->bagUntukKabagNama($role)) {
+            $hasil = $this->bagService->teruskanDisposisiKabag($id, $role, $userIdsTerpilih);
 
+            if ($hasil['ditambah'] || $hasil['dihapus']) {
+                $suratRow = DB::table('surat')->where('id', $id)->first();
+                $csv = $suratRow && $suratRow->disposisi ? explode(',', $suratRow->disposisi) : [];
+                $csv = array_values(array_diff($csv, $hasil['dihapus']));
+                foreach ($hasil['ditambah'] as $n) {
+                    if (!in_array($n, $csv, true)) {
+                        $csv[] = $n;
+                    }
+                }
+                DB::table('surat')->where('id', $id)->update(['disposisi' => $csv ? implode(',', $csv) : null]);
+
+                $bagian = [];
+                if ($hasil['ditambah']) {
+                    $bagian[] = 'diteruskan ke: '.implode(', ', $hasil['ditambah']);
+                }
+                if ($hasil['dihapus']) {
+                    $bagian[] = 'dibatalkan ke: '.implode(', ', $hasil['dihapus']);
+                }
                 ActivityLogger::log(
                     $request, null, $diprosesOleh, 'update',
-                    "Kabag $role meneruskan Surat Masuk $nomorSurat0 ($perihal0) ke: ".implode(', ', $namaBaru), $id,
+                    "Kabag $role memperbarui tujuan disposisi Surat Masuk $nomorSurat0 ($perihal0) -- ".implode('; ', $bagian), $id,
+                );
+            }
+        } elseif ($this->bagService->bagDisposisiIdsUntukNama($role)) {
+            // $role Penerima Disposisi biasa: "teruskan ke rekan sebag"
+            // (client kirim array rekan_terpilih berisi user_id). Centang =
+            // tambah rekan; uncheck = batalkan TAPI hanya rekan yang $role
+            // sendiri tambahkan & belum direspon. Lihat
+            // BagService::teruskanDisposisiAntarAnggota().
+            $rekanInput = $request->input('rekan_terpilih', []);
+            $rekanIds = is_array($rekanInput)
+                ? array_values(array_filter(array_map('intval', $rekanInput)))
+                : [];
+            $hasil = $this->bagService->teruskanDisposisiAntarAnggota($id, $role, $rekanIds);
+
+            if ($hasil['ditambah'] || $hasil['dihapus']) {
+                $suratRow = DB::table('surat')->where('id', $id)->first();
+                $csv = $suratRow && $suratRow->disposisi ? explode(',', $suratRow->disposisi) : [];
+                $csv = array_values(array_diff($csv, $hasil['dihapus']));
+                foreach ($hasil['ditambah'] as $n) {
+                    if (!in_array($n, $csv, true)) {
+                        $csv[] = $n;
+                    }
+                }
+                DB::table('surat')->where('id', $id)->update(['disposisi' => $csv ? implode(',', $csv) : null]);
+
+                $bagian = [];
+                if ($hasil['ditambah']) {
+                    $bagian[] = 'diteruskan ke: '.implode(', ', $hasil['ditambah']);
+                }
+                if ($hasil['dihapus']) {
+                    $bagian[] = 'dibatalkan ke: '.implode(', ', $hasil['dihapus']);
+                }
+                ActivityLogger::log(
+                    $request, null, $diprosesOleh, 'update',
+                    "$role memperbarui terusan rekan sebag Surat Masuk $nomorSurat0 ($perihal0) -- ".implode('; ', $bagian), $id,
                 );
             }
         }

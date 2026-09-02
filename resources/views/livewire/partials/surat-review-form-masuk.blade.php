@@ -178,6 +178,29 @@
                                 </div>
                             @endif
 
+                            @php $rekanInfo = $kabagInfo ? null : $this->rekanSebagUntuk($d->role); @endphp
+                            @if ($rekanInfo && !empty($rekanInfo['anggota']))
+                                <div class="mt-3 border-t border-gray-100 pt-3">
+                                    <p class="mb-1 text-xs font-semibold text-text-dark">Teruskan ke rekan sebag (opsional)</p>
+                                    <p class="mb-2 text-[11px] text-text-muted">Rekan Penerima Disposisi di Bag "{{ $rekanInfo['bag'] }}". Anda hanya bisa membatalkan terusan yang Anda buat sendiri &amp; belum direspon.</p>
+                                    <div class="space-y-1 rounded-lg border border-gray-200 p-2">
+                                        @foreach ($rekanInfo['anggota'] as $a)
+                                            @php $terkunci = $a['punya_baris'] && !$a['bisa_uncheck']; @endphp
+                                            <label class="flex items-center gap-2.5 rounded px-1 py-1 text-sm text-text-dark hover:bg-app-background {{ $terkunci ? 'opacity-70' : '' }}">
+                                                <input type="checkbox" wire:model="rekanSebagTerpilih.{{ $d->role }}" value="{{ $a['user_id'] }}"
+                                                    @disabled($terkunci)
+                                                    class="rounded border-gray-300 text-primary-green focus:ring-primary-green disabled:opacity-60">
+                                                <span>{{ $a['nama'] }}
+                                                    @if ($terkunci)
+                                                        <span class="text-[11px] text-text-muted">(sudah menerima)</span>
+                                                    @endif
+                                                </span>
+                                            </label>
+                                        @endforeach
+                                    </div>
+                                </div>
+                            @endif
+
                             <button
                                 type="button" wire:click="simpanDisposisi('{{ $d->role }}')"
                                 wire:loading.attr="disabled" wire:target="simpanDisposisi('{{ $d->role }}')"

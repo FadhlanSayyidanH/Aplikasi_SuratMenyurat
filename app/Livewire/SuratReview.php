@@ -77,6 +77,15 @@ class SuratReview extends Component
      */
     public array $kabagAnggotaTerpilih = [];
 
+    /**
+     * @var array<string, int[]> nama pemilik kartu disposisi (Penerima
+     *      Disposisi biasa) => user_id rekan SATU Bag yang dicentang untuk
+     *      diteruskan -- lihat simpanDisposisi() &
+     *      BagService::teruskanDisposisiAntarAnggota(). Beda dari
+     *      $kabagAnggotaTerpilih: ini untuk anggota biasa, bukan Kabag.
+     */
+    public array $rekanSebagTerpilih = [];
+
     /** @var array<string, bool> */
     public array $isSubmittingRole = [];
 
@@ -191,6 +200,21 @@ class SuratReview extends Component
                 $this->kabagAnggotaTerpilih[$d->role] = collect($kabagInfo['anggota_masuk'])
                     ->filter(fn ($a) => in_array($a['nama'], $namaSudahDidisposisi, true))
                     ->pluck('user_id')->all();
+
+                continue;
+            }
+
+            // Pra-centang "teruskan ke rekan sebag" untuk kartu milik akun
+            // yang sedang login (Penerima Disposisi biasa) -- rekan yang
+            // SUDAH punya baris tampil tercentang (yang terkunci tetap
+            // tercentang; yang "punya + hak + belum respon" bisa di-uncheck).
+            if (Auth::user() && Auth::user()->nama === $d->role) {
+                $rekanInfo = $this->rekanSebagUntuk($d->role);
+                if ($rekanInfo) {
+                    $this->rekanSebagTerpilih[$d->role] = collect($rekanInfo['anggota'])
+                        ->filter(fn ($a) => $a['punya_baris'])
+                        ->pluck('user_id')->all();
+                }
             }
         }
 
@@ -267,6 +291,71 @@ class SuratReview extends Component
     public function kabagInfoUntuk(string $nama): ?array
     {
         return app(BagService::class)->bagUntukKabagNama($nama);
+    }
+
+    /**
+     * null kalau $nama BUKAN Penerima Disposisi (bag_disposisi_anggota) Bag
+     * manapun. Kalau IYA, kembalikan daftar rekan SATU Bag yang bisa dituju
+     * "teruskan ke rekan sebag" -- lihat kartu disposisi di
+     * resources/views/livewire/partials/surat-review-form-masuk.blade.php.
+     *
+     * `bisa_uncheck` = baris rekan itu ADA, dibuat oleh $nama sendiri
+     * (ditambah_oleh === $nama), dan penerimanya BELUM merespon -- hanya
+     * itu yang boleh dibatalkan anggota (baris Kabag/gerbang/sudah-direspon
+     * terkunci).
+     *
+     * @return array{bag: string, anggota: array<int, array{user_id:int, nama:string, punya_baris:bool, bisa_uncheck:bool}>}|null
+     */
+    public function rekanSebagUntuk(string $nama): ?array
+    {
+        $svc = app(BagService::class);
+        $bagIds = $svc->bagDisposisiIdsUntukNama($nama);
+        if (!$bagIds) {
+            return null;
+        }
+
+        $namaBag = DB::table('bag_masuk')->whereIn('id', $bagIds)->orderBy('nama')->value('nama') ?? '';
+
+        $dariUserId = (int) DB::table('users')->where('nama', $nama)->value('id');
+        $rekanRows = DB::table('bag_disposisi_anggota as bda')
+            ->join('users as u', 'u.id', '=', 'bda.user_id')
+            ->whereIn('bda.bag_id', $bagIds)
+            ->where('u.id', '!=', $dariUserId)
+            ->orderBy('bda.urutan')->orderBy('bda.id')
+            ->select('u.id as user_id', 'u.nama')
+            ->distinct()
+            ->get();
+
+        $disposisi = DB::table('surat_disposisi')
+            ->where('surat_id', $this->surat->id)
+            ->get(['role', 'catatan', 'diproses_oleh', 'ditambah_oleh'])
+            ->keyBy('role');
+
+        $anggota = [];
+        $sudahAda = [];
+        foreach ($rekanRows as $r) {
+            if (isset($sudahAda[$r->user_id])) {
+                continue;
+            }
+            $sudahAda[$r->user_id] = true;
+
+            $row = $disposisi->get($r->nama);
+            $punyaBaris = $row !== null;
+            $bisaUncheck = false;
+            if ($punyaBaris) {
+                $belumRespon = ($row->catatan === null || trim($row->catatan) === '') && $row->diproses_oleh === null;
+                $bisaUncheck = $row->ditambah_oleh === $nama && $belumRespon;
+            }
+
+            $anggota[] = [
+                'user_id' => (int) $r->user_id,
+                'nama' => $r->nama,
+                'punya_baris' => $punyaBaris,
+                'bisa_uncheck' => $bisaUncheck,
+            ];
+        }
+
+        return ['bag' => $namaBag, 'anggota' => $anggota];
     }
 
     /** @return array<int, array> bentuk siap-tampil sama persis seperti detailResponse() API. */
@@ -1750,30 +1839,79 @@ class SuratReview extends Component
             "Isi Disposisi $nama - Surat Masuk {$this->surat->nomor_surat} ({$this->surat->perihal})", $id,
         );
 
-        // Kalau $nama ini kebetulan akun Kabag (bag_masuk.kabag_user_id),
-        // sekalian proses checkbox "teruskan ke anggota" yang mungkin
-        // dicentang di kartu yang sama -- lihat komentar lengkap di
-        // BagService::teruskanDisposisiKabag(). Opsional: tidak dicentang
-        // sama sekali (Kabag cuma mengisi catatan tanpa meneruskan) tetap
-        // valid, tidak dianggap error.
-        $userIdsTerpilih = array_values(array_filter(array_map('intval', $this->kabagAnggotaTerpilih[$nama] ?? [])));
-        if ($userIdsTerpilih) {
-            $namaBaru = app(BagService::class)->teruskanDisposisiKabag($id, $nama, $userIdsTerpilih);
-            if ($namaBaru) {
-                $suratRow = DB::table('surat')->where('id', $id)->first();
-                $gabunganLama = $suratRow && $suratRow->disposisi ? explode(',', $suratRow->disposisi) : [];
-                $gabunganBaru = array_values(array_unique([...$gabunganLama, ...$namaBaru]));
-                DB::table('surat')->where('id', $id)->update(['disposisi' => implode(',', $gabunganBaru)]);
+        // Kalau $nama ini akun Kabag (bag_masuk.kabag_user_id), rekonsiliasi
+        // checkbox "teruskan ke anggota" di kartu yang sama: anggota yang
+        // dicentang ditambahkan, yang di-UNCHECK dan belum merespon dihapus
+        // -- lihat BagService::teruskanDisposisiKabag(). Dipanggil TANPA
+        // syarat ada yang dicentang (uncheck semua = batalkan semua anggota).
+        $catatanTambahan = '';
+        if ($this->kabagInfoUntuk($nama)) {
+            $userIdsTerpilih = array_values(array_filter(array_map('intval', $this->kabagAnggotaTerpilih[$nama] ?? [])));
+            $hasil = app(BagService::class)->teruskanDisposisiKabag($id, $nama, $userIdsTerpilih);
 
+            if ($hasil['ditambah'] || $hasil['dihapus']) {
+                $suratRow = DB::table('surat')->where('id', $id)->first();
+                $csv = $suratRow && $suratRow->disposisi ? explode(',', $suratRow->disposisi) : [];
+                $csv = array_values(array_diff($csv, $hasil['dihapus']));
+                foreach ($hasil['ditambah'] as $n) {
+                    if (!in_array($n, $csv, true)) {
+                        $csv[] = $n;
+                    }
+                }
+                DB::table('surat')->where('id', $id)->update(['disposisi' => $csv ? implode(',', $csv) : null]);
+
+                $bagian = [];
+                if ($hasil['ditambah']) {
+                    $bagian[] = 'diteruskan ke: '.implode(', ', $hasil['ditambah']);
+                }
+                if ($hasil['dihapus']) {
+                    $bagian[] = 'dibatalkan ke: '.implode(', ', $hasil['dihapus']);
+                }
                 ActivityLogger::log(
                     request(), null, $user->nama, 'update',
-                    "Kabag $nama meneruskan Surat Masuk {$this->surat->nomor_surat} ({$this->surat->perihal}) ke: ".implode(', ', $namaBaru), $id,
+                    "Kabag $nama memperbarui tujuan disposisi Surat Masuk {$this->surat->nomor_surat} ({$this->surat->perihal}) -- ".implode('; ', $bagian), $id,
+                );
+            }
+
+            if ($hasil['dipertahankan']) {
+                $catatanTambahan = ' '.implode(', ', $hasil['dipertahankan'])
+                    .' sudah mengisi disposisi, tidak ikut dibatalkan.';
+            }
+        } elseif ($this->rekanSebagUntuk($nama)) {
+            // $nama Penerima Disposisi biasa (bukan Kabag): "teruskan ke
+            // rekan sebag" -- centang = tambah rekan; uncheck = batalkan
+            // TAPI hanya rekan yang $nama sendiri tambahkan & belum direspon.
+            // Lihat BagService::teruskanDisposisiAntarAnggota().
+            $rekanIds = array_values(array_filter(array_map('intval', $this->rekanSebagTerpilih[$nama] ?? [])));
+            $hasil = app(BagService::class)->teruskanDisposisiAntarAnggota($id, $nama, $rekanIds);
+
+            if ($hasil['ditambah'] || $hasil['dihapus']) {
+                $suratRow = DB::table('surat')->where('id', $id)->first();
+                $csv = $suratRow && $suratRow->disposisi ? explode(',', $suratRow->disposisi) : [];
+                $csv = array_values(array_diff($csv, $hasil['dihapus']));
+                foreach ($hasil['ditambah'] as $n) {
+                    if (!in_array($n, $csv, true)) {
+                        $csv[] = $n;
+                    }
+                }
+                DB::table('surat')->where('id', $id)->update(['disposisi' => $csv ? implode(',', $csv) : null]);
+
+                $bagian = [];
+                if ($hasil['ditambah']) {
+                    $bagian[] = 'diteruskan ke: '.implode(', ', $hasil['ditambah']);
+                }
+                if ($hasil['dihapus']) {
+                    $bagian[] = 'dibatalkan ke: '.implode(', ', $hasil['dihapus']);
+                }
+                ActivityLogger::log(
+                    request(), null, $user->nama, 'update',
+                    "$nama memperbarui terusan rekan sebag Surat Masuk {$this->surat->nomor_surat} ({$this->surat->perihal}) -- ".implode('; ', $bagian), $id,
                 );
             }
         }
 
         $this->isSubmittingRole[$nama] = false;
-        $this->dispatch('notify', message: "Disposisi untuk $nama tersimpan.");
+        $this->dispatch('notify', message: "Disposisi untuk $nama tersimpan.".$catatanTambahan);
     }
 
     /**

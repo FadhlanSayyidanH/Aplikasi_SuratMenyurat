@@ -5,7 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 
-#[Fillable(['surat_id', 'role', 'catatan', 'diproses_oleh', 'diproses_at'])]
+#[Fillable(['surat_id', 'role', 'catatan', 'diproses_oleh', 'diproses_at', 'ditambah_oleh'])]
 class SuratDisposisi extends Model
 {
     protected $table = 'surat_disposisi';
