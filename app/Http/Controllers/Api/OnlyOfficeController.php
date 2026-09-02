@@ -35,8 +35,12 @@ class OnlyOfficeController extends Controller
     ) {}
 
     /**
-     * GET /surat_edit_docx.php?file_id=... -- config editor untuk SATU file
-     * .docx/.pptx/.xlsx lampiran Surat Keluar. Migrasi dari surat_edit_docx.php.
+     * GET /surat_edit_docx.php?file_id=... -- config editor/viewer untuk
+     * SATU file .docx/.pptx/.xlsx lampiran Surat Keluar. Migrasi dari
+     * surat_edit_docx.php, sejak 2026-09-01 mengikuti pola editPdf() (lihat
+     * $bolehEdit di bawah): siapa pun yang terlibat pada surat ini boleh
+     * MEMBUKA (melihat) dokumennya, terlepas dari gilirannya sudah lewat
+     * atau belum -- yang dibatasi cuma izin MENGEDIT.
      */
     public function editDocx(Request $request)
     {
@@ -62,21 +66,36 @@ class OnlyOfficeController extends Controller
             throw new ApiException('File ini bukan dokumen DOCX/PPTX/XLSX yang bisa diedit', 400);
         }
 
-        // Dokumen yang sudah disetujui SEPENUHNYA final -- tidak boleh
-        // diedit lagi lewat OnlyOffice oleh siapa pun. Ditolak (perlu
-        // revisi) TETAP boleh diedit -- itu alur normal sebelum "Ajukan
-        // Ulang".
-        if ($surat->status === 'disetujui') {
-            throw new ApiException('Dokumen sudah disetujui sepenuhnya, tidak bisa diedit lagi', 403);
+        // Batas akses DASAR (bisa LIHAT sama sekali atau tidak) -- SAMA pola
+        // dengan editPdf(): admin/pimpinan bebas, selain itu harus benar-
+        // benar TERLIBAT (salah satu tahap approval, termasuk yang sudah
+        // lewat gilirannya -- lihat Surat::bolehDiaksesOleh()). Gagal di
+        // sini = 403 TOTAL (beda dari $bolehEdit di bawah, yang gagalnya
+        // tetap 200 tapi read-only).
+        if (!$surat->bolehDiaksesOleh($authUser)) {
+            throw new ApiException('Anda tidak berhak melihat dokumen ini', 403);
         }
 
-        $approvalRows = SuratApproval::query()
-            ->where('surat_id', $surat->id)
-            ->orderBy('urutan')
-            ->get(['urutan', 'role', 'status']);
-
-        if (!$this->bolehEditTahap($approvalRows, $authUser->nama)) {
-            throw new ApiException('Anda tidak berhak mengedit dokumen ini saat ini', 403);
+        // $bolehEdit -- SENGAJA tidak jadi alasan 403 (pola yang sama
+        // dengan editPdf()). Pejabat yang gilirannya sudah lewat (baik
+        // karena tahapnya sendiri sudah diproses, atau tahap SESUDAHNYA
+        // sudah diproses) TETAP bisa membuka dokumen untuk DILIHAT, cuma
+        // tidak bisa mengedit (permissions.edit di bawah) -- sebelumnya
+        // dokumen ini 403 TOTAL untuk mereka, satu-satunya jalan masuk
+        // adalah SuratReview::editDocumentAndOpen() yang memaksa reset
+        // rantai approval dulu, padahal mereka cuma mau melihat isinya.
+        // Kalau memang mau mengedit ulang (bukan gilirannya), itu tetap
+        // harus lewat editDocumentAndOpen() yang mereset rantai -- bukan
+        // lewat sini.
+        $bolehEdit = true;
+        if ($surat->status === 'disetujui') {
+            $bolehEdit = false;
+        } else {
+            $approvalRows = SuratApproval::query()
+                ->where('surat_id', $surat->id)
+                ->orderBy('urutan')
+                ->get(['urutan', 'role', 'status']);
+            $bolehEdit = $this->bolehEditTahap($approvalRows, $authUser->nama);
         }
 
         $filePath = config('suratapp.uploads_path').'/'.$file->file_name;
@@ -97,7 +116,7 @@ class OnlyOfficeController extends Controller
                 'title' => $file->file_original_name ?: $file->file_name,
                 'url' => $documentUrl,
                 'permissions' => [
-                    'edit' => true,
+                    'edit' => $bolehEdit,
                     'download' => true,
                     'print' => true,
                 ],
@@ -389,24 +408,35 @@ class OnlyOfficeController extends Controller
     }
 
     /**
-     * true kalau $namaUser berhak mengedit dokumen surat yang sedang di
-     * tahap approval $approvalRows saat ini -- pejabat pemegang tahap harus
-     * PUNYA baris approval untuk surat ini, DAN seluruh tahap SEBELUM
-     * miliknya (urutan lebih kecil) sudah 'disetujui'. Logika identik dipakai
-     * surat_edit_docx.php & surat_edit_pdf.php lama (disalin persis, bukan
-     * SuratFileService::bolehKelolaFileSuratKeluar() -- method itu punya
-     * aturan berbeda, dipakai untuk tambah/hapus/ganti-nama file, bukan izin
-     * edit konten lewat OnlyOffice).
+     * true kalau $namaUser berhak MENGEDIT (bukan cuma melihat) dokumen
+     * surat pada tahap approval $approvalRows saat ini -- pejabat pemegang
+     * tahap harus PUNYA baris approval untuk surat ini, tahap tsb SENDIRI
+     * masih 'menunggu' (belum diproses), seluruh tahap SEBELUM miliknya
+     * (urutan lebih kecil) sudah 'disetujui', dan tidak ada tahap SESUDAH
+     * miliknya yang sudah diproses (bisa terjadi lewat rantai manual yang
+     * diedit, lihat SuratReview::simpanEditRantaiManual()). Sengaja
+     * SEJALAN dengan SuratReview::fileNeedsResetConfirm() (giliran yang
+     * sudah lewat = TIDAK boleh edit langsung di sini, harus lewat
+     * editDocumentAndOpen() yang mereset rantai dulu) -- BUKAN lagi versi
+     * lama yang cuma mengecek tahap SEBELUM (itu keliru membiarkan
+     * pejabat yang tahapnya sendiri/tahap sesudahnya sudah diproses tetap
+     * dapat izin edit penuh cuma dengan membuka tautan "Buka" biasa, tanpa
+     * pernah melalui alur reset+konfirmasi -- baru ketahuan setelah
+     * editDocx() berhenti 403 total dan endpoint ini jadi bisa dicapai
+     * langsung dalam kondisi "belum direset").
      */
     private function bolehEditTahap(\Illuminate\Support\Collection $approvalRows, string $namaUser): bool
     {
         $tahapSaya = $approvalRows->first(fn ($row) => $row->role === $namaUser);
-        if (!$tahapSaya) {
+        if (!$tahapSaya || $tahapSaya->status !== 'menunggu') {
             return false;
         }
 
         foreach ($approvalRows as $row) {
             if ($row->urutan < $tahapSaya->urutan && $row->status !== 'disetujui') {
+                return false;
+            }
+            if ($row->urutan > $tahapSaya->urutan && $row->status !== 'menunggu') {
                 return false;
             }
         }

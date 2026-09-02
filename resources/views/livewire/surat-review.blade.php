@@ -180,17 +180,29 @@
                                 </div>
 
                                 <div class="flex shrink-0 flex-wrap items-center gap-1.5 text-xs">
+                                    {{--
+                                        "Buka" SELALU tampil (murni melihat, tidak menyentuh
+                                        rantai approval sama sekali) -- kalau memang giliran
+                                        pejabat ini untuk mengedit, OnlyOffice sendiri yang
+                                        mengizinkan mengedit langsung di sini (izin dicek
+                                        server-side per-request oleh OnlyOfficeController,
+                                        bukan oleh tombol mana yang diklik). "Buka & Edit"
+                                        cuma tampil TAMBAHAN saat mengedit sekarang akan
+                                        mereset keputusan yang sudah ada -- supaya pejabat
+                                        yang gilirannya sudah lewat tetap bisa MELIHAT dokumen
+                                        tanpa terpaksa menarik kembali proses rantainya.
+                                    --}}
+                                    <a
+                                        href="{{ route($this->isFoto($file['file_original_name']) ? 'surat-file.annotate' : 'surat-file.editor', $file['id']) }}"
+                                        class="rounded-lg border border-gray-300 px-2.5 py-1.5 font-medium text-text-dark hover:bg-app-background"
+                                    >Buka</a>
+
                                     @if ($this->fileNeedsResetConfirm())
                                         <button
                                             type="button" wire:click="editDocumentAndOpen({{ $file['id'] }})"
                                             wire:confirm="Surat ini sudah sempat diproses sebagian. Mengedit dokumennya sekarang akan mereset keputusan mulai dari tahap Anda -- semua pejabat mulai dari posisi Anda akan memproses ulang dokumen yang baru. Keputusan tahap-tahap SEBELUM Anda tidak berubah. Lanjutkan?"
                                             class="rounded-lg border border-gray-300 px-2.5 py-1.5 font-medium text-text-dark hover:bg-app-background"
                                         >Buka &amp; Edit</button>
-                                    @else
-                                        <a
-                                            href="{{ route($this->isFoto($file['file_original_name']) ? 'surat-file.annotate' : 'surat-file.editor', $file['id']) }}"
-                                            class="rounded-lg border border-gray-300 px-2.5 py-1.5 font-medium text-text-dark hover:bg-app-background"
-                                        >Buka</a>
                                     @endif
 
                                     <a href="{{ $file['file_url'] }}" target="_blank" class="rounded-lg border border-gray-300 px-2.5 py-1.5 font-medium text-text-dark hover:bg-app-background">Unduh</a>
