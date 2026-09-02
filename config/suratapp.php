@@ -23,14 +23,6 @@ return [
     // localhost/IP LAN yang selalu diizinkan (lihat CorsMiddleware).
     'cors_extra_origin' => env('CORS_EXTRA_ORIGIN'),
 
-    // Tombol mengambang "Kontak Admin" (x-kontak-admin) -- nomor WA format
-    // internasional TANPA "+" (mis. 62812xxxxxxx), sesuai format wa.me.
-    // Sengaja lewat .env (bukan hardcode di blade) supaya repo publik tidak
-    // usah menyertakan kontak pribadi asli -- isi nilai sesungguhnya di
-    // .env produksi saja.
-    'kontak_admin_nama' => env('KONTAK_ADMIN_NAMA', 'Admin'),
-    'kontak_admin_wa' => env('KONTAK_ADMIN_WA', ''),
-
     'nama_posisi_tetap' => ['Kabagtu Subditbinum', 'Turmin Subditbinum', 'Kasubditbinum'],
 
     // Instruksi disposisi (multi-pilih) -- kode => label tampil.

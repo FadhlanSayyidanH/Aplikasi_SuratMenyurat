@@ -14,14 +14,45 @@
     x-data="{
         mobileNavOpen: false, toasts: [], notifPopups: [],
         webPushStatus: 'unsupported',
+        webPushReminderVisible: false, webPushReminderStep: 'ask',
         async initWebPush() {
             if (!window.webPushDidukung || !window.webPushDidukung()) return;
             this.webPushStatus = await window.webPushStatus();
+            @auth
+            this.cekIngatkanWebPush();
+            @endauth
+        },
+        cekIngatkanWebPush() {
+            // Cuma ingatkan kalau belum pernah subscribe sama sekali --
+            // status 'denied'/'unsupported' sudah tidak relevan diingatkan
+            // lagi lewat popup ini (denied cuma bisa diaktifkan lewat
+            // pengaturan browser, bukan tombol kita). 'Nanti Saja' menunda
+            // 24 jam per akun (bukan per perangkat) lewat localStorage,
+            // supaya di perangkat yang dipakai bergantian beberapa akun
+            // (lihat catatan multi-akun-satu-perangkat di webPushStatus()),
+            // snooze akun A tidak ikut membungkam pengingat untuk akun B.
+            if (this.webPushStatus !== 'unsubscribed') return;
+            const snoozeKey = 'webpush_reminder_snooze_{{ auth()->id() }}';
+            if (Date.now() < Number(localStorage.getItem(snoozeKey) || 0)) return;
+            this.webPushReminderStep = 'ask';
+            this.webPushReminderVisible = true;
         },
         async toggleWebPush() {
             this.webPushStatus = this.webPushStatus === 'subscribed'
                 ? await window.webPushMatikan()
                 : await window.webPushAktifkan('{{ config('webpush.vapid.public_key') }}');
+        },
+        async aktifkanDariReminder() {
+            this.webPushStatus = await window.webPushAktifkan('{{ config('webpush.vapid.public_key') }}');
+            if (this.webPushStatus === 'subscribed') {
+                this.webPushReminderStep = 'done';
+            } else {
+                this.webPushReminderVisible = false;
+            }
+        },
+        nantiSajaReminder() {
+            localStorage.setItem('webpush_reminder_snooze_{{ auth()->id() }}', String(Date.now() + 24 * 60 * 60 * 1000));
+            this.webPushReminderVisible = false;
         },
     }"
     x-init="initWebPush()"
@@ -80,6 +111,50 @@
                         class="mt-4 w-full rounded-lg bg-primary-green px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-secondary-green"
                         @click="notifPopups = notifPopups.filter(p => p.id !== popup.id)"
                     >Tutup</button>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    {{--
+        Floating reminder "Aktifkan Notifikasi HP" -- muncul otomatis kalau
+        browser DIDUKUNG Push API tapi user belum pernah subscribe sama
+        sekali (bukan tombol manual di sidebar, lihat cekIngatkanWebPush()
+        di atas). "Nanti Saja" menunda 24 jam per akun (localStorage),
+        bukan menyembunyikan permanen -- supaya user yang menunda tetap
+        diingatkan lagi besok kalau masih belum aktif.
+    --}}
+    <div
+        x-show="webPushReminderVisible" x-cloak
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+    >
+        <div class="w-full max-w-sm rounded-2xl bg-app-surface p-5 text-center shadow-2xl">
+            <template x-if="webPushReminderStep === 'ask'">
+                <div>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-9 w-9 text-gold" viewBox="0 0 24 24" fill="currentColor"><path d="M12 22a2.5 2.5 0 0 0 2.5-2.5h-5A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.83V3a1.5 1.5 0 0 0-3 0v1.17A7 7 0 0 0 5 11v5l-1.6 1.6a1 1 0 0 0 .7 1.7h15.8a1 1 0 0 0 .7-1.7L19 16Z"/></svg>
+                    <p class="mt-3 text-base font-bold text-text-dark">Aktifkan Notifikasi HP?</p>
+                    <p class="mt-2 text-sm text-text-muted">Supaya Anda tidak ketinggalan surat yang perlu ditindak, disetujui, atau ditolak, aktifkan notifikasi HP/desktop. Notifikasi akan tetap masuk ke bar notifikasi meski aplikasi ini tidak sedang dibuka.</p>
+                    <div class="mt-4 flex flex-col gap-2">
+                        <button
+                            type="button" @click="aktifkanDariReminder()"
+                            class="w-full rounded-lg bg-primary-green px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-secondary-green"
+                        >Aktifkan Notifikasi</button>
+                        <button
+                            type="button" @click="nantiSajaReminder()"
+                            class="w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-text-muted transition hover:bg-app-background"
+                        >Nanti Saja</button>
+                    </div>
+                </div>
+            </template>
+            <template x-if="webPushReminderStep === 'done'">
+                <div>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-9 w-9 text-secondary-green" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9.5"/><path d="m8 12.5 2.5 2.5L16 9.5"/></svg>
+                    <p class="mt-3 text-base font-bold text-text-dark">Notifikasi HP Aktif</p>
+                    <p class="mt-2 text-sm text-text-muted">Agar notifikasi tetap masuk, <b>jangan logout</b> -- cukup tutup aplikasi/browsernya saja. Notifikasi tetap akan sampai ke bar notifikasi HP/desktop meski aplikasi sedang tidak dibuka.</p>
+                    <button
+                        type="button" @click="webPushReminderVisible = false"
+                        class="mt-4 w-full rounded-lg bg-primary-green px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-secondary-green"
+                    >Mengerti</button>
                 </div>
             </template>
         </div>
@@ -215,6 +290,7 @@
 
                 @auth
                     @if (auth()->user()->role === 'admin')
+                        @php $jmlLaporanBaru = \App\Models\LaporanGangguan::where('status', 'baru')->count(); @endphp
                         <p class="mt-6 mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-wider text-white/40">Sistem</p>
                         @foreach ([
                             ['route' => 'activity-log.index', 'label' => 'Log Aktivitas'],
@@ -225,13 +301,17 @@
                             ['route' => 'hak-akses.index', 'label' => 'Hak Akses'],
                             ['route' => 'struktur-anggota.index', 'label' => 'Struktur Anggota'],
                             ['route' => 'pengumuman.index', 'label' => 'Pengumuman'],
+                            ['route' => 'laporan-gangguan.index', 'label' => 'Laporan Gangguan', 'badge' => $jmlLaporanBaru],
                         ] as $item)
                             <a
                                 href="{{ route($item['route']) }}" wire:navigate
                                 class="flex items-center gap-3 rounded-lg px-3 py-2.5 transition {{ request()->routeIs($item['route']) ? 'bg-white/10 text-white font-medium' : 'text-white/70 hover:bg-white/5 hover:text-white' }}"
                             >
                                 <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-gold"></span>
-                                {{ $item['label'] }}
+                                <span class="min-w-0 flex-1 truncate">{{ $item['label'] }}</span>
+                                @if (!empty($item['badge']))
+                                    <span class="shrink-0 rounded-full bg-app-error px-1.5 py-0.5 text-[10px] font-bold text-white">{{ $item['badge'] }}</span>
+                                @endif
                             </a>
                         @endforeach
                     @endif
@@ -267,7 +347,7 @@
         @livewire('auth.change-password-modal')
     @endauth
 
-    <x-kontak-admin />
+    @livewire('laporan-gangguan-widget')
 
     {{--
         App\Http\Middleware\EnsureSingleWebSession menendang sesi lama saat

@@ -11,8 +11,6 @@
 <body class="bg-app-background font-sans text-text-dark antialiased">
     {{ $slot }}
 
-    <x-kontak-admin />
-
     @livewireScripts
 </body>
 </html>

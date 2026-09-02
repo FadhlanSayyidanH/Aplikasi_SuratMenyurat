@@ -44,3 +44,4 @@ require __DIR__.'/web_riwayat.php';
 require __DIR__.'/web_storage.php';
 require __DIR__.'/web_webpush.php';
 require __DIR__.'/web_pengumuman.php';
+require __DIR__.'/web_laporan_gangguan.php';
