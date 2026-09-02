@@ -1,5 +1,7 @@
 # Surat Ditajenad (CARAKA-BINUM)
 
+**English** · [Bahasa Indonesia](README.id.md)
+
 Laravel backend for **Surat Menyurat Ditajenad TNI AD (CARAKA-BINUM)** — an
 incoming/outgoing letter administration system for the Adjutant General
 Directorate of the Indonesian Army (Ditajenad), Subditbinum. It handles the
